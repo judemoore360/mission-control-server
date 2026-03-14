@@ -30,19 +30,31 @@ app.get('/calendar', (req, res) => {
   res.json({ events: calendarEvents });
 });
 
-// ── COMMUTE ───────────────────────────────────────────────────────────────────
+// ── COMMUTE (Routes API) ──────────────────────────────────────────────────────
 app.get('/commute', async (req, res) => {
   try {
-    const origin = 'Cross+in+Hand,+East+Sussex,+TN21+0SR';
-    const destination = 'East+Sussex+College,+Cross+Levels+Way,+Eastbourne,+BN21+2UF';
-    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&traffic_model=best_guess&key=${GOOGLE_MAPS_KEY}`;
-    const response = await fetch(url);
+    const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': GOOGLE_MAPS_KEY,
+        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.travelAdvisory'
+      },
+      body: JSON.stringify({
+        origin: { address: 'Cross in Hand, East Sussex, TN21 0SR, UK' },
+        destination: { address: 'East Sussex College, Cross Levels Way, Eastbourne, BN21 2UF, UK' },
+        travelMode: 'DRIVE',
+        routingPreference: 'TRAFFIC_AWARE',
+        departureTime: new Date().toISOString()
+      })
+    });
     const data = await response.json();
-    const element = data.rows[0].elements[0];
-    const duration = element.duration_in_traffic || element.duration;
-    const mins = Math.round(duration.value / 60);
-    const distance = element.distance.text;
-    res.json({ mins, distance, status: 'ok' });
+    console.log('Routes API response:', JSON.stringify(data).slice(0, 300));
+    const route = data.routes && data.routes[0];
+    if (!route) return res.status(500).json({ error: 'No route found', raw: data });
+    const mins = Math.round(parseInt(route.duration) / 60);
+    const km = (route.distanceMeters / 1000).toFixed(1);
+    res.json({ mins, distance: `${km} km`, status: 'ok' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
