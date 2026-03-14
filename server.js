@@ -1,7 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -11,28 +9,14 @@ const TODOIST_TOKEN = process.env.TODOIST_TOKEN;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/google/callback';
-const TOKENS_FILE = path.join('/tmp', 'google_tokens.json');
 
 let googleTokens = null;
 let calendarEvents = [];
 
-// Load tokens from disk on startup
-try {
-  if (fs.existsSync(TOKENS_FILE)) {
-    googleTokens = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
-    console.log('Google tokens loaded from disk');
-  }
-} catch(e) {
-  console.log('No saved tokens found');
-}
-
-function saveTokens(tokens) {
-  googleTokens = tokens;
-  try {
-    fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens));
-  } catch(e) {
-    console.log('Could not save tokens:', e.message);
-  }
+// Load refresh token from environment on startup
+if (process.env.GOOGLE_REFRESH_TOKEN) {
+  googleTokens = { refresh_token: process.env.GOOGLE_REFRESH_TOKEN };
+  console.log('Google tokens loaded from environment');
 }
 
 // ── CALENDAR ──────────────────────────────────────────────────────────────────
@@ -40,7 +24,7 @@ app.post('/calendar', (req, res) => {
   const { events } = req.body;
   if (events) {
     calendarEvents = events;
-    console.log(`Calendar updated: ${typeof events === 'string' ? 'string format' : events.length + ' events'}`);
+    console.log(`Calendar updated`);
   }
   res.json({ success: true });
 });
@@ -91,8 +75,19 @@ app.get('/auth/google/callback', async (req, res) => {
       body: new URLSearchParams({ code, client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET, redirect_uri: REDIRECT_URI, grant_type: 'authorization_code' })
     });
     const tokens = await tokenRes.json();
-    saveTokens(tokens);
-    res.send('<h2 style="font-family:sans-serif;color:green">✅ Gmail connected permanently! Close this tab and refresh your dashboard.</h2>');
+    googleTokens = tokens;
+    res.send(`
+      <h2 style="font-family:sans-serif;color:green">✅ Gmail connected!</h2>
+      <p style="font-family:sans-serif;margin:16px 0">Now do this one time to make it permanent:</p>
+      <ol style="font-family:sans-serif;line-height:2">
+        <li>Copy the refresh token below</li>
+        <li>Go to Render → your service → Environment</li>
+        <li>Add new variable: <strong>GOOGLE_REFRESH_TOKEN</strong></li>
+        <li>Paste the token as the value and save</li>
+      </ol>
+      <p style="font-family:sans-serif;margin:16px 0"><strong>Your refresh token:</strong></p>
+      <textarea style="width:100%;height:80px;font-size:12px;padding:8px">${tokens.refresh_token}</textarea>
+    `);
   } catch (err) { res.status(500).send('Auth failed: ' + err.message); }
 });
 
@@ -104,7 +99,6 @@ async function refreshGoogleToken() {
   });
   const data = await res.json();
   googleTokens.access_token = data.access_token;
-  saveTokens(googleTokens);
 }
 
 // ── GMAIL EMAILS ──────────────────────────────────────────────────────────────
