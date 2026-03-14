@@ -45,7 +45,7 @@ app.get('/commute', async (req, res) => {
         destination: { address: 'East Sussex College, Cross Levels Way, Eastbourne, BN21 2UF, UK' },
         travelMode: 'DRIVE',
         routingPreference: 'TRAFFIC_AWARE',
-        departureTime: new Date().toISOString()
+        departureTime: new Date(Date.now() + 60000).toISOString()
       })
     });
     const data = await response.json();
