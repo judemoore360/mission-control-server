@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -9,16 +11,36 @@ const TODOIST_TOKEN = process.env.TODOIST_TOKEN;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/google/callback';
+const TOKENS_FILE = path.join('/tmp', 'google_tokens.json');
 
 let googleTokens = null;
 let calendarEvents = [];
+
+// Load tokens from disk on startup
+try {
+  if (fs.existsSync(TOKENS_FILE)) {
+    googleTokens = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+    console.log('Google tokens loaded from disk');
+  }
+} catch(e) {
+  console.log('No saved tokens found');
+}
+
+function saveTokens(tokens) {
+  googleTokens = tokens;
+  try {
+    fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens));
+  } catch(e) {
+    console.log('Could not save tokens:', e.message);
+  }
+}
 
 // ── CALENDAR ──────────────────────────────────────────────────────────────────
 app.post('/calendar', (req, res) => {
   const { events } = req.body;
   if (events) {
     calendarEvents = events;
-    console.log(`Calendar updated: ${events.length} events`);
+    console.log(`Calendar updated: ${typeof events === 'string' ? 'string format' : events.length + ' events'}`);
   }
   res.json({ success: true });
 });
@@ -68,8 +90,9 @@ app.get('/auth/google/callback', async (req, res) => {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ code, client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET, redirect_uri: REDIRECT_URI, grant_type: 'authorization_code' })
     });
-    googleTokens = await tokenRes.json();
-    res.send('<h2 style="font-family:sans-serif;color:green">✅ Gmail connected! Close this tab and refresh your dashboard.</h2>');
+    const tokens = await tokenRes.json();
+    saveTokens(tokens);
+    res.send('<h2 style="font-family:sans-serif;color:green">✅ Gmail connected permanently! Close this tab and refresh your dashboard.</h2>');
   } catch (err) { res.status(500).send('Auth failed: ' + err.message); }
 });
 
@@ -81,6 +104,7 @@ async function refreshGoogleToken() {
   });
   const data = await res.json();
   googleTokens.access_token = data.access_token;
+  saveTokens(googleTokens);
 }
 
 // ── GMAIL EMAILS ──────────────────────────────────────────────────────────────
