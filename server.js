@@ -3,6 +3,7 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const TODOIST_TOKEN = process.env.TODOIST_TOKEN;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -10,7 +11,23 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/google/callback';
 
 let googleTokens = null;
+let calendarEvents = [];
 
+// ── CALENDAR ──────────────────────────────────────────────────────────────────
+app.post('/calendar', (req, res) => {
+  const { events } = req.body;
+  if (events) {
+    calendarEvents = events;
+    console.log(`Calendar updated: ${events.length} events`);
+  }
+  res.json({ success: true });
+});
+
+app.get('/calendar', (req, res) => {
+  res.json({ events: calendarEvents });
+});
+
+// ── TODOIST ──────────────────────────────────────────────────────────────────
 app.get('/tasks', async (req, res) => {
   try {
     const [tasksRes, projectsRes] = await Promise.all([
@@ -30,6 +47,7 @@ app.post('/tasks/:id/close', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GMAIL AUTH ────────────────────────────────────────────────────────────────
 app.get('/auth/google', (req, res) => {
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
@@ -65,6 +83,7 @@ async function refreshGoogleToken() {
   googleTokens.access_token = data.access_token;
 }
 
+// ── GMAIL EMAILS ──────────────────────────────────────────────────────────────
 app.get('/emails', async (req, res) => {
   if (!googleTokens) return res.json({ emails: [], status: 'not_connected' });
   try {
