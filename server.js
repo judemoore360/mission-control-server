@@ -8,12 +8,12 @@ app.use(express.json());
 const TODOIST_TOKEN = process.env.TODOIST_TOKEN;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_KEY;
 const REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/google/callback';
 
 let googleTokens = null;
 let calendarEvents = [];
 
-// Load refresh token from environment on startup
 if (process.env.GOOGLE_REFRESH_TOKEN) {
   googleTokens = { refresh_token: process.env.GOOGLE_REFRESH_TOKEN };
   console.log('Google tokens loaded from environment');
@@ -22,15 +22,30 @@ if (process.env.GOOGLE_REFRESH_TOKEN) {
 // ── CALENDAR ──────────────────────────────────────────────────────────────────
 app.post('/calendar', (req, res) => {
   const { events } = req.body;
-  if (events) {
-    calendarEvents = events;
-    console.log('Calendar updated');
-  }
+  if (events) { calendarEvents = events; }
   res.json({ success: true });
 });
 
 app.get('/calendar', (req, res) => {
   res.json({ events: calendarEvents });
+});
+
+// ── COMMUTE ───────────────────────────────────────────────────────────────────
+app.get('/commute', async (req, res) => {
+  try {
+    const origin = 'Cross+in+Hand,+East+Sussex,+TN21+0SR';
+    const destination = 'East+Sussex+College,+Cross+Levels+Way,+Eastbourne,+BN21+2UF';
+    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&traffic_model=best_guess&key=${GOOGLE_MAPS_KEY}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    const element = data.rows[0].elements[0];
+    const duration = element.duration_in_traffic || element.duration;
+    const mins = Math.round(duration.value / 60);
+    const distance = element.distance.text;
+    res.json({ mins, distance, status: 'ok' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── TODOIST ──────────────────────────────────────────────────────────────────
