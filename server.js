@@ -24,7 +24,7 @@ app.post('/calendar', (req, res) => {
   const { events } = req.body;
   if (events) {
     calendarEvents = events;
-    console.log(`Calendar updated`);
+    console.log('Calendar updated');
   }
   res.json({ success: true });
 });
@@ -120,6 +120,29 @@ app.get('/emails', async (req, res) => {
       return { id: msg.id, from: fromName, subject, date };
     }));
     res.json({ emails, status: 'connected' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── GMAIL EMAIL BODY ──────────────────────────────────────────────────────────
+app.get('/emails/:id', async (req, res) => {
+  if (!googleTokens) return res.status(401).json({ error: 'not_connected' });
+  try {
+    await refreshGoogleToken();
+    const msgRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${req.params.id}?format=full`,
+      { headers: { 'Authorization': `Bearer ${googleTokens.access_token}` } }
+    );
+    const msgData = await msgRes.json();
+    let body = '';
+    const parts = msgData.payload.parts || [msgData.payload];
+    for (const part of parts) {
+      if (part.mimeType === 'text/plain' && part.body && part.body.data) {
+        body = Buffer.from(part.body.data, 'base64').toString('utf8');
+        break;
+      }
+    }
+    body = body.replace(/\r\n/g, '\n').trim().slice(0, 1000);
+    res.json({ body });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
