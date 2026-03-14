@@ -9,25 +9,52 @@ const TODOIST_TOKEN = process.env.TODOIST_TOKEN;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_KEY;
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/google/callback';
 
 let googleTokens = null;
-let calendarEvents = [];
 
 if (process.env.GOOGLE_REFRESH_TOKEN) {
   googleTokens = { refresh_token: process.env.GOOGLE_REFRESH_TOKEN };
   console.log('Google tokens loaded from environment');
 }
 
+// ── UPSTASH HELPERS ───────────────────────────────────────────────────────────
+async function redisSet(key, value) {
+  await fetch(`${UPSTASH_URL}/set/${key}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(value)
+  });
+}
+
+async function redisGet(key) {
+  const res = await fetch(`${UPSTASH_URL}/get/${key}`, {
+    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` }
+  });
+  const data = await res.json();
+  return data.result;
+}
+
 // ── CALENDAR ──────────────────────────────────────────────────────────────────
-app.post('/calendar', (req, res) => {
+app.post('/calendar', async (req, res) => {
   const { events } = req.body;
-  if (events) { calendarEvents = events; }
+  if (events) {
+    await redisSet('calendar_events', JSON.stringify(events));
+    console.log('Calendar saved to Upstash');
+  }
   res.json({ success: true });
 });
 
-app.get('/calendar', (req, res) => {
-  res.json({ events: calendarEvents });
+app.get('/calendar', async (req, res) => {
+  try {
+    const raw = await redisGet('calendar_events');
+    const events = raw ? JSON.parse(raw) : [];
+    res.json({ events });
+  } catch(e) {
+    res.json({ events: [] });
+  }
 });
 
 // ── COMMUTE (Routes API) ──────────────────────────────────────────────────────
@@ -38,7 +65,7 @@ app.get('/commute', async (req, res) => {
       headers: {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': GOOGLE_MAPS_KEY,
-        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.travelAdvisory'
+        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters'
       },
       body: JSON.stringify({
         origin: { address: 'Cross in Hand, East Sussex, TN21 0SR, UK' },
@@ -49,7 +76,6 @@ app.get('/commute', async (req, res) => {
       })
     });
     const data = await response.json();
-    console.log('Routes API response:', JSON.stringify(data).slice(0, 300));
     const route = data.routes && data.routes[0];
     if (!route) return res.status(500).json({ error: 'No route found', raw: data });
     const mins = Math.round(parseInt(route.duration) / 60);
