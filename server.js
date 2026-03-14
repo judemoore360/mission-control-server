@@ -39,12 +39,21 @@ async function redisGet(key) {
 
 // ── CALENDAR ──────────────────────────────────────────────────────────────────
 app.post('/calendar', async (req, res) => {
-  const { events } = req.body;
-  if (events) {
-    await redisSet('calendar_events', JSON.stringify(events));
-    console.log('Calendar saved to Upstash');
+  try {
+    console.log('Calendar POST received');
+    console.log('Body keys:', Object.keys(req.body));
+    const { events } = req.body;
+    console.log('Events type:', typeof events);
+    console.log('Events preview:', JSON.stringify(events).slice(0, 200));
+    if (events) {
+      const result = await redisSet('calendar_events', JSON.stringify(events));
+      console.log('Upstash save result:', JSON.stringify(result));
+    }
+    res.json({ success: true });
+  } catch(e) {
+    console.log('Calendar POST error:', e.message);
+    res.status(500).json({ error: e.message });
   }
-  res.json({ success: true });
 });
 
 app.get('/calendar', async (req, res) => {
