@@ -119,9 +119,10 @@ app.get('/etoro', async (req, res) => {
       });
       const instrData = await instrRes.json();
       const instruments = instrData.instruments || instrData;
-      if (Array.isArray(instruments)) {
-        instruments.forEach(i => { instrumentMap[i.instrumentId || i.id] = i.symbolFull || i.ticker || i.name; });
-      }
+      const instruments = instrData.instrumentDisplayDatas || instrData.instruments || instrData;
+if (Array.isArray(instruments)) {
+  instruments.forEach(i => { instrumentMap[i.instrumentID] = i.symbolFull || i.instrumentDisplayName; });
+}
     } catch(e) {
       console.log('Could not fetch instrument names:', e.message);
     }
