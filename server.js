@@ -66,9 +66,19 @@ app.post('/calendar', async (req, res) => {
 app.get('/calendar', async (req, res) => {
   try {
     const raw = await redisGet('calendar_events');
-    const events = raw ? JSON.parse(raw) : [];
+    console.log('Raw from Redis type:', typeof raw);
+    console.log('Raw preview:', String(raw).slice(0, 200));
+    if (!raw) return res.json({ events: [] });
+    // Data is newline-separated JSON strings
+    const events = String(raw)
+      .split('\n')
+      .filter(line => line.trim())
+      .map(line => { try { return JSON.parse(line); } catch(e) { return null; } })
+      .filter(Boolean);
+    console.log('Parsed events count:', events.length);
     res.json({ events });
   } catch(e) {
+    console.log('Calendar GET error:', e.message);
     res.json({ events: [] });
   }
 });
