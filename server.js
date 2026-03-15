@@ -22,11 +22,12 @@ if (process.env.GOOGLE_REFRESH_TOKEN) {
 
 // ── UPSTASH HELPERS ───────────────────────────────────────────────────────────
 async function redisSet(key, value) {
-  await fetch(`${UPSTASH_URL}/set/${key}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(value)
+  const res = await fetch(`${UPSTASH_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}`, {
+    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` }
   });
+  const data = await res.json();
+  console.log('Upstash set response:', JSON.stringify(data));
+  return data;
 }
 
 async function redisGet(key) {
