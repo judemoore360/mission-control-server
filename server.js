@@ -109,7 +109,7 @@ app.get('/etoro', async (req, res) => {
     // Fetch instrument names
     const instrumentIds = [...new Set(portfolio.positions.map(p => p.instrumentID))];
     let instrumentMap = {};
-    try {
+   try {
       const instrRes = await fetch(`https://public-api.etoro.com/api/v1/market-data/instruments?instrumentIds=${instrumentIds.join(',')}`, {
         headers: {
           'x-api-key': process.env.ETORO_API_KEY,
@@ -118,11 +118,8 @@ app.get('/etoro', async (req, res) => {
         }
       });
       const instrData = await instrRes.json();
-      const instruments = instrData.instruments || instrData;
-      const instruments = instrData.instrumentDisplayDatas || instrData.instruments || instrData;
-if (Array.isArray(instruments)) {
-  instruments.forEach(i => { instrumentMap[i.instrumentID] = i.symbolFull || i.instrumentDisplayName; });
-}
+      const instrList = instrData.instrumentDisplayDatas || instrData.instruments || [];
+      instrList.forEach(i => { instrumentMap[i.instrumentID] = i.symbolFull || i.instrumentDisplayName; });
     } catch(e) {
       console.log('Could not fetch instrument names:', e.message);
     }
