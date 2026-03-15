@@ -69,7 +69,7 @@ app.get('/calendar', async (req, res) => {
     console.log('Raw preview:', String(raw).slice(0, 150));
     if (!raw) return res.json({ events: [] });
     const events = String(raw)
-  .split(/\\n|\n/)
+      .split(/\\n|\n/)
       .filter(line => line.trim())
       .map(line => { try { return JSON.parse(line); } catch(e) { return null; } })
       .filter(Boolean);
@@ -78,6 +78,34 @@ app.get('/calendar', async (req, res) => {
   } catch(e) {
     console.log('Calendar GET error:', e.message);
     res.json({ events: [] });
+  }
+});
+
+// ── ETORO ─────────────────────────────────────────────────────────────────────
+app.get('/etoro', async (req, res) => {
+  try {
+    const response = await fetch('https://public-api.etoro.com/api/v1/trading/info/real/pnl', {
+      headers: {
+        'x-api-key': process.env.ETORO_API_KEY,
+        'x-user-key': process.env.ETORO_USER_KEY,
+        'x-request-id': '550e8400-e29b-41d4-a716-446655440000'
+      }
+    });
+    const data = await response.json();
+    const portfolio = data.clientPortfolio;
+    const cash = portfolio.credit || 0;
+    const unrealizedPnL = portfolio.unrealizedPnL || 0;
+    const totalInvested = portfolio.positions.reduce((sum, p) => sum + (p.amount || 0), 0);
+    const equity = cash + totalInvested + unrealizedPnL;
+    res.json({
+      equity: Math.round(equity * 100) / 100,
+      invested: Math.round(totalInvested * 100) / 100,
+      pnl: Math.round(unrealizedPnL * 100) / 100,
+      cash: Math.round(cash * 100) / 100,
+      status: 'ok'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
