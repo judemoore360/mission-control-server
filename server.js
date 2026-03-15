@@ -84,24 +84,68 @@ app.get('/calendar', async (req, res) => {
 // ── ETORO ─────────────────────────────────────────────────────────────────────
 app.get('/etoro', async (req, res) => {
   try {
-    const response = await fetch('https://public-api.etoro.com/api/v1/trading/info/real/pnl', {
-      headers: {
-        'x-api-key': process.env.ETORO_API_KEY,
-        'x-user-key': process.env.ETORO_USER_KEY,
-        'x-request-id': '550e8400-e29b-41d4-a716-446655440000'
-      }
-    });
-    const data = await response.json();
-    const portfolio = data.clientPortfolio;
-    const cash = portfolio.credit || 0;
+    // Fetch eToro data and GBP exchange rate in parallel
+    const [etoroRes, fxRes] = await Promise.all([
+      fetch('https://public-api.etoro.com/api/v1/trading/info/real/pnl', {
+        headers: {
+          'x-api-key': process.env.ETORO_API_KEY,
+          'x-user-key': process.env.ETORO_USER_KEY,
+          'x-request-id': '550e8400-e29b-41d4-a716-446655440000'
+        }
+      }),
+      fetch('https://api.frankfurter.app/latest?from=USD&to=GBP')
+    ]);
+
+    const etoroData = await etoroRes.json();
+    const fxData    = await fxRes.json();
+    const usdToGbp  = fxData.rates.GBP;
+
+    const portfolio    = etoroData.clientPortfolio;
+    const cash         = portfolio.credit || 0;
     const unrealizedPnL = portfolio.unrealizedPnL || 0;
     const totalInvested = portfolio.positions.reduce((sum, p) => sum + (p.amount || 0), 0);
-    const equity = cash + totalInvested + unrealizedPnL;
+    const equity        = cash + totalInvested + unrealizedPnL;
+
+    // Fetch instrument names
+    const instrumentIds = [...new Set(portfolio.positions.map(p => p.instrumentID))];
+    let instrumentMap = {};
+    try {
+      const instrRes = await fetch(`https://public-api.etoro.com/api/v1/market-data/instruments?instrumentIds=${instrumentIds.join(',')}`, {
+        headers: {
+          'x-api-key': process.env.ETORO_API_KEY,
+          'x-user-key': process.env.ETORO_USER_KEY,
+          'x-request-id': '550e8400-e29b-41d4-a716-446655440001'
+        }
+      });
+      const instrData = await instrRes.json();
+      const instruments = instrData.instruments || instrData;
+      if (Array.isArray(instruments)) {
+        instruments.forEach(i => { instrumentMap[i.instrumentId || i.id] = i.symbolFull || i.ticker || i.name; });
+      }
+    } catch(e) {
+      console.log('Could not fetch instrument names:', e.message);
+    }
+
+    // Build positions list
+    const positions = portfolio.positions.map(p => {
+      const pnl     = p.unrealizedPnL?.pnL || 0;
+      const pct     = p.amount > 0 ? (pnl / p.amount) * 100 : 0;
+      const name    = instrumentMap[p.instrumentID] || `#${p.instrumentID}`;
+      return {
+        name,
+        amount:    Math.round(p.amount * usdToGbp * 100) / 100,
+        pnl:       Math.round(pnl * usdToGbp * 100) / 100,
+        pct:       Math.round(pct * 10) / 10
+      };
+    }).sort((a, b) => b.amount - a.amount);
+
     res.json({
-      equity: Math.round(equity * 100) / 100,
-      invested: Math.round(totalInvested * 100) / 100,
-      pnl: Math.round(unrealizedPnL * 100) / 100,
-      cash: Math.round(cash * 100) / 100,
+      equity:   Math.round(equity * usdToGbp * 100) / 100,
+      invested: Math.round(totalInvested * usdToGbp * 100) / 100,
+      pnl:      Math.round(unrealizedPnL * usdToGbp * 100) / 100,
+      cash:     Math.round(cash * usdToGbp * 100) / 100,
+      rate:     usdToGbp,
+      positions,
       status: 'ok'
     });
   } catch (err) {
