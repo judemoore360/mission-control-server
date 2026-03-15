@@ -21,13 +21,13 @@ if (process.env.GOOGLE_REFRESH_TOKEN) {
 }
 
 async function redisSet(key, value) {
-  const res = await fetch(`${UPSTASH_URL}/set/${key}`, {
+  const res = await fetch(`${UPSTASH_URL}/pipeline`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${UPSTASH_TOKEN}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(value)
+    body: JSON.stringify([['SET', key, value]])
   });
   const data = await res.json();
   console.log('Upstash set:', JSON.stringify(data));
@@ -69,7 +69,7 @@ app.get('/calendar', async (req, res) => {
     console.log('Raw preview:', String(raw).slice(0, 150));
     if (!raw) return res.json({ events: [] });
     const events = String(raw)
-      .split('\n')
+  .split(/\\n|\n/)
       .filter(line => line.trim())
       .map(line => { try { return JSON.parse(line); } catch(e) { return null; } })
       .filter(Boolean);
