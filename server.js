@@ -6,6 +6,9 @@ app.use(cors());
 app.use(express.json());
 
 const TODOIST_TOKEN = process.env.TODOIST_TOKEN;
+const TICKTICK_CLIENT_ID = process.env.TICKTICK_CLIENT_ID;
+const TICKTICK_CLIENT_SECRET = process.env.TICKTICK_CLIENT_SECRET;
+const TICKTICK_REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/ticktick/callback';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_KEY;
@@ -14,23 +17,25 @@ const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/google/callback';
 
 let googleTokens = null;
+let ticktickTokens = null;
 
 if (process.env.GOOGLE_REFRESH_TOKEN) {
   googleTokens = { refresh_token: process.env.GOOGLE_REFRESH_TOKEN };
   console.log('Google tokens loaded from environment');
 }
 
+if (process.env.TICKTICK_REFRESH_TOKEN) {
+  ticktickTokens = { refresh_token: process.env.TICKTICK_REFRESH_TOKEN };
+  console.log('TickTick tokens loaded from environment');
+}
+
 async function redisSet(key, value) {
   const res = await fetch(`${UPSTASH_URL}/pipeline`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${UPSTASH_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
+    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify([['SET', key, value]])
   });
   const data = await res.json();
-  console.log('Upstash set:', JSON.stringify(data));
   return data;
 }
 
@@ -42,49 +47,35 @@ async function redisGet(key) {
   if (!data.result) return null;
   let result = data.result;
   try { result = decodeURIComponent(result); } catch(e) {}
-  if (result.startsWith('"') && result.endsWith('"')) {
-    result = result.slice(1, -1);
-  }
+  if (result.startsWith('"') && result.endsWith('"')) result = result.slice(1, -1);
   result = result.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
   return result;
 }
 
+// ── CALENDAR ──────────────────────────────────────────────────────────────────
 app.post('/calendar', async (req, res) => {
   try {
     const { events } = req.body;
-    if (events) {
-      await redisSet('calendar_events', events);
-      console.log('Calendar saved to Upstash');
-    }
+    if (events) { await redisSet('calendar_events', events); }
     res.json({ success: true });
-  } catch(e) {
-    console.log('Calendar POST error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/calendar', async (req, res) => {
   try {
     const raw = await redisGet('calendar_events');
-    console.log('Raw preview:', String(raw).slice(0, 150));
     if (!raw) return res.json({ events: [] });
-    const events = String(raw)
-      .split(/\\n|\n/)
+    const events = String(raw).split(/\\n|\n/)
       .filter(line => line.trim())
       .map(line => { try { return JSON.parse(line); } catch(e) { return null; } })
       .filter(Boolean);
-    console.log('Parsed events count:', events.length);
     res.json({ events });
-  } catch(e) {
-    console.log('Calendar GET error:', e.message);
-    res.json({ events: [] });
-  }
+  } catch(e) { res.json({ events: [] }); }
 });
 
 // ── ETORO ─────────────────────────────────────────────────────────────────────
 app.get('/etoro', async (req, res) => {
   try {
-    // Fetch eToro data and GBP exchange rate in parallel
     const [etoroRes, fxRes] = await Promise.all([
       fetch('https://public-api.etoro.com/api/v1/trading/info/real/pnl', {
         headers: {
@@ -95,118 +86,130 @@ app.get('/etoro', async (req, res) => {
       }),
       fetch('https://api.frankfurter.app/latest?from=USD&to=GBP')
     ]);
-
     const etoroData = await etoroRes.json();
-    const fxData    = await fxRes.json();
-    const usdToGbp  = fxData.rates.GBP;
-
-    const portfolio    = etoroData.clientPortfolio;
-    const cash         = portfolio.credit || 0;
+    const fxData = await fxRes.json();
+    const usdToGbp = fxData.rates.GBP;
+    const portfolio = etoroData.clientPortfolio;
+    const cash = portfolio.credit || 0;
     const unrealizedPnL = portfolio.unrealizedPnL || 0;
     const totalInvested = portfolio.positions.reduce((sum, p) => sum + (p.amount || 0), 0);
-    const equity        = cash + totalInvested + unrealizedPnL;
-
-    // Fetch instrument names
+    const equity = cash + totalInvested + unrealizedPnL;
     const instrumentIds = [...new Set(portfolio.positions.map(p => p.instrumentID))];
     let instrumentMap = {};
-   try {
+    try {
       const instrRes = await fetch(`https://public-api.etoro.com/api/v1/market-data/instruments?instrumentIds=${instrumentIds.join(',')}`, {
-        headers: {
-          'x-api-key': process.env.ETORO_API_KEY,
-          'x-user-key': process.env.ETORO_USER_KEY,
-          'x-request-id': '550e8400-e29b-41d4-a716-446655440001'
-        }
+        headers: { 'x-api-key': process.env.ETORO_API_KEY, 'x-user-key': process.env.ETORO_USER_KEY, 'x-request-id': '550e8400-e29b-41d4-a716-446655440001' }
       });
       const instrData = await instrRes.json();
       const instrList = instrData.instrumentDisplayDatas || instrData.instruments || [];
       instrList.forEach(i => { instrumentMap[i.instrumentID] = i.symbolFull || i.instrumentDisplayName; });
-    } catch(e) {
-      console.log('Could not fetch instrument names:', e.message);
-    }
-
-    // Build positions list
+    } catch(e) { console.log('Could not fetch instrument names:', e.message); }
     const positions = portfolio.positions.map(p => {
-      const pnl     = p.unrealizedPnL?.pnL || 0;
-      const pct     = p.amount > 0 ? (pnl / p.amount) * 100 : 0;
-      const name    = instrumentMap[p.instrumentID] || `#${p.instrumentID}`;
-      return {
-        name,
-        amount:    Math.round(p.amount * usdToGbp * 100) / 100,
-        pnl:       Math.round(pnl * usdToGbp * 100) / 100,
-        pct:       Math.round(pct * 10) / 10
-      };
+      const pnl = p.unrealizedPnL?.pnL || 0;
+      const pct = p.amount > 0 ? (pnl / p.amount) * 100 : 0;
+      return { name: instrumentMap[p.instrumentID] || `#${p.instrumentID}`, amount: Math.round(p.amount * usdToGbp * 100) / 100, pnl: Math.round(pnl * usdToGbp * 100) / 100, pct: Math.round(pct * 10) / 10 };
     }).sort((a, b) => b.amount - a.amount);
-
-    res.json({
-      equity:   Math.round(equity * usdToGbp * 100) / 100,
-      invested: Math.round(totalInvested * usdToGbp * 100) / 100,
-      pnl:      Math.round(unrealizedPnL * usdToGbp * 100) / 100,
-      cash:     Math.round(cash * usdToGbp * 100) / 100,
-      rate:     usdToGbp,
-      positions,
-      status: 'ok'
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json({ equity: Math.round(equity * usdToGbp * 100) / 100, invested: Math.round(totalInvested * usdToGbp * 100) / 100, pnl: Math.round(unrealizedPnL * usdToGbp * 100) / 100, cash: Math.round(cash * usdToGbp * 100) / 100, rate: usdToGbp, positions, status: 'ok' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── COMMUTE ───────────────────────────────────────────────────────────────────
 app.get('/commute', async (req, res) => {
   try {
     const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': GOOGLE_MAPS_KEY,
-        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters'
-      },
-      body: JSON.stringify({
-        origin: { address: 'Cross in Hand, East Sussex, TN21 0SR, UK' },
-        destination: { address: 'East Sussex College, Cross Levels Way, Eastbourne, BN21 2UF, UK' },
-        travelMode: 'DRIVE',
-        routingPreference: 'TRAFFIC_AWARE',
-        departureTime: new Date(Date.now() + 60000).toISOString()
-      })
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_MAPS_KEY, 'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters' },
+      body: JSON.stringify({ origin: { address: 'Cross in Hand, East Sussex, TN21 0SR, UK' }, destination: { address: 'East Sussex College, Cross Levels Way, Eastbourne, BN21 2UF, UK' }, travelMode: 'DRIVE', routingPreference: 'TRAFFIC_AWARE', departureTime: new Date(Date.now() + 60000).toISOString() })
     });
     const data = await response.json();
     const route = data.routes && data.routes[0];
-    if (!route) return res.status(500).json({ error: 'No route found', raw: data });
+    if (!route) return res.status(500).json({ error: 'No route found' });
     const mins = Math.round(parseInt(route.duration) / 60);
     const km = (route.distanceMeters / 1000).toFixed(1);
     res.json({ mins, distance: `${km} km`, status: 'ok' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── TICKTICK AUTH ─────────────────────────────────────────────────────────────
+app.get('/auth/ticktick', (req, res) => {
+  const params = new URLSearchParams({
+    client_id: TICKTICK_CLIENT_ID,
+    redirect_uri: TICKTICK_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'tasks:read tasks:write'
+  });
+  res.redirect(`https://ticktick.com/oauth/authorize?${params}`);
+});
+
+app.get('/auth/ticktick/callback', async (req, res) => {
+  const { code } = req.query;
+  try {
+    const tokenRes = await fetch('https://ticktick.com/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + Buffer.from(`${TICKTICK_CLIENT_ID}:${TICKTICK_CLIENT_SECRET}`).toString('base64')
+      },
+      body: new URLSearchParams({ code, grant_type: 'authorization_code', redirect_uri: TICKTICK_REDIRECT_URI })
+    });
+    const tokens = await tokenRes.json();
+    console.log('TickTick tokens:', JSON.stringify(tokens));
+    ticktickTokens = tokens;
+    res.send(`
+      <h2 style="font-family:sans-serif;color:green">✅ TickTick connected!</h2>
+      <p style="font-family:sans-serif">Add these to Render environment variables to make it permanent:</p>
+      <p style="font-family:sans-serif"><strong>TICKTICK_ACCESS_TOKEN:</strong><br><textarea style="width:100%;height:60px">${tokens.access_token}</textarea></p>
+      <p style="font-family:sans-serif"><strong>TICKTICK_REFRESH_TOKEN:</strong><br><textarea style="width:100%;height:60px">${tokens.refresh_token || 'none'}</textarea></p>
+    `);
+  } catch (err) { res.status(500).send('Auth failed: ' + err.message); }
+});
+
+async function refreshTickTickToken() {
+  if (!ticktickTokens?.refresh_token || ticktickTokens.refresh_token === 'none') return;
+  try {
+    const res = await fetch('https://ticktick.com/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + Buffer.from(`${TICKTICK_CLIENT_ID}:${TICKTICK_CLIENT_SECRET}`).toString('base64')
+      },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: ticktickTokens.refresh_token })
+    });
+    const data = await res.json();
+    if (data.access_token) ticktickTokens.access_token = data.access_token;
+  } catch(e) { console.log('TickTick refresh error:', e.message); }
+}
+
+// ── TICKTICK TASKS ────────────────────────────────────────────────────────────
 app.get('/tasks', async (req, res) => {
+  const token = process.env.TICKTICK_ACCESS_TOKEN || ticktickTokens?.access_token;
+  if (!token) return res.json({ tasks: [], projects: [], status: 'not_connected' });
   try {
     const [tasksRes, projectsRes] = await Promise.all([
-      fetch('https://api.todoist.com/api/v1/tasks', { headers: { 'Authorization': `Bearer ${TODOIST_TOKEN}` } }),
-      fetch('https://api.todoist.com/api/v1/projects', { headers: { 'Authorization': `Bearer ${TODOIST_TOKEN}` } })
+      fetch('https://api.ticktick.com/open/v1/task', { headers: { 'Authorization': `Bearer ${token}` } }),
+      fetch('https://api.ticktick.com/open/v1/project', { headers: { 'Authorization': `Bearer ${token}` } })
     ]);
-    const tasksData = await tasksRes.json();
-    const projectsData = await projectsRes.json();
-    res.json({ tasks: tasksData.results || tasksData, projects: projectsData.results || projectsData });
+    const tasks = await tasksRes.json();
+    const projects = await projectsRes.json();
+    res.json({ tasks: Array.isArray(tasks) ? tasks : [], projects: Array.isArray(projects) ? projects : [] });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/tasks/:id/close', async (req, res) => {
+  const token = process.env.TICKTICK_ACCESS_TOKEN || ticktickTokens?.access_token;
+  const { projectId } = req.body;
   try {
-    await fetch(`https://api.todoist.com/api/v1/tasks/${req.params.id}/close`, { method: 'POST', headers: { 'Authorization': `Bearer ${TODOIST_TOKEN}` } });
+    await fetch(`https://api.ticktick.com/open/v1/project/${projectId}/task/${req.params.id}/complete`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GMAIL AUTH ────────────────────────────────────────────────────────────────
 app.get('/auth/google', (req, res) => {
-  const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    response_type: 'code',
-    scope: 'https://www.googleapis.com/auth/gmail.readonly',
-    access_type: 'offline',
-    prompt: 'consent'
-  });
+  const params = new URLSearchParams({ client_id: GOOGLE_CLIENT_ID, redirect_uri: REDIRECT_URI, response_type: 'code', scope: 'https://www.googleapis.com/auth/gmail.readonly', access_type: 'offline', prompt: 'consent' });
   res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });
 
@@ -234,6 +237,7 @@ async function refreshGoogleToken() {
   googleTokens.access_token = data.access_token;
 }
 
+// ── GMAIL EMAILS ──────────────────────────────────────────────────────────────
 app.get('/emails', async (req, res) => {
   if (!googleTokens) return res.json({ emails: [], status: 'not_connected' });
   try {
