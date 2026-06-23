@@ -185,12 +185,15 @@ app.get('/tasks', async (req, res) => {
   if (!ticktickTokens && process.env.TICKTICK_ACCESS_TOKEN) {
     ticktickTokens = { access_token: process.env.TICKTICK_ACCESS_TOKEN, refresh_token: process.env.TICKTICK_REFRESH_TOKEN };
   }
-  if (!ticktickTokens) return res.json({ tasks: [], projects: [], status: 'not_connected' });
+if (!ticktickTokens) return res.json({ tasks: [], projects: [], status: 'not_connected' });
   try {
+    console.log('TickTick token:', ticktickTokens.access_token?.slice(0, 10));
     const projectsRes = await fetch('https://api.ticktick.com/open/v1/project', {
       headers: { 'Authorization': `Bearer ${ticktickTokens.access_token}` }
     });
     const projects = await projectsRes.json();
+    console.log('Projects response:', JSON.stringify(projects).slice(0, 200));
+    if (!Array.isArray(projects)) return res.status(500).json({ error: 'projects not array', raw: projects });
     const taskPromises = projects.map(p =>
       fetch(`https://api.ticktick.com/open/v1/project/${p.id}/data`, {
         headers: { 'Authorization': `Bearer ${ticktickTokens.access_token}` }
