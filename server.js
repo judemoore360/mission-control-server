@@ -5,7 +5,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const TODOIST_TOKEN = process.env.TODOIST_TOKEN;
 const TICKTICK_CLIENT_ID = process.env.TICKTICK_CLIENT_ID;
 const TICKTICK_CLIENT_SECRET = process.env.TICKTICK_CLIENT_SECRET;
 const TICKTICK_REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/ticktick/callback';
@@ -17,16 +16,15 @@ const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const REDIRECT_URI = 'https://mission-control-server.onrender.com/auth/google/callback';
 
 let googleTokens = null;
-let ticktickTokens = null;
+let ticktickAccessToken = process.env.TICKTICK_ACCESS_TOKEN || null;
 
 if (process.env.GOOGLE_REFRESH_TOKEN) {
   googleTokens = { refresh_token: process.env.GOOGLE_REFRESH_TOKEN };
   console.log('Google tokens loaded from environment');
 }
 
-if (process.env.TICKTICK_REFRESH_TOKEN) {
-  ticktickTokens = { refresh_token: process.env.TICKTICK_REFRESH_TOKEN };
-  console.log('TickTick tokens loaded from environment');
+if (ticktickAccessToken) {
+  console.log('TickTick access token loaded from environment:', ticktickAccessToken.slice(0, 8));
 }
 
 async function redisSet(key, value) {
@@ -35,8 +33,7 @@ async function redisSet(key, value) {
     headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify([['SET', key, value]])
   });
-  const data = await res.json();
-  return data;
+  return await res.json();
 }
 
 async function redisGet(key) {
@@ -101,9 +98,9 @@ app.get('/etoro', async (req, res) => {
         headers: { 'x-api-key': process.env.ETORO_API_KEY, 'x-user-key': process.env.ETORO_USER_KEY, 'x-request-id': '550e8400-e29b-41d4-a716-446655440001' }
       });
       const instrData = await instrRes.json();
-      const instrList = instrData.instrumentDisplayDatas || instrData.instruments || [];
+      const instrList = instrData.instrumentDisplayDatas || [];
       instrList.forEach(i => { instrumentMap[i.instrumentID] = i.symbolFull || i.instrumentDisplayName; });
-    } catch(e) { console.log('Could not fetch instrument names:', e.message); }
+    } catch(e) {}
     const positions = portfolio.positions.map(p => {
       const pnl = p.unrealizedPnL?.pnL || 0;
       const pct = p.amount > 0 ? (pnl / p.amount) * 100 : 0;
@@ -153,60 +150,53 @@ app.get('/auth/ticktick/callback', async (req, res) => {
       body: new URLSearchParams({ code, grant_type: 'authorization_code', redirect_uri: TICKTICK_REDIRECT_URI })
     });
     const tokens = await tokenRes.json();
-    console.log('TickTick tokens:', JSON.stringify(tokens));
-    ticktickTokens = tokens;
+    ticktickAccessToken = tokens.access_token;
     res.send(`
       <h2 style="font-family:sans-serif;color:green">✅ TickTick connected!</h2>
       <p style="font-family:sans-serif">Add these to Render environment variables to make it permanent:</p>
       <p style="font-family:sans-serif"><strong>TICKTICK_ACCESS_TOKEN:</strong><br><textarea style="width:100%;height:60px">${tokens.access_token}</textarea></p>
-      <p style="font-family:sans-serif"><strong>TICKTICK_REFRESH_TOKEN:</strong><br><textarea style="width:100%;height:60px">${tokens.refresh_token || 'none'}</textarea></p>
     `);
   } catch (err) { res.status(500).send('Auth failed: ' + err.message); }
 });
 
-async function refreshTickTickToken() {
-  if (!ticktickTokens?.refresh_token || ticktickTokens.refresh_token === 'none') return;
-  try {
-    const res = await fetch('https://ticktick.com/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': 'Basic ' + Buffer.from(`${TICKTICK_CLIENT_ID}:${TICKTICK_CLIENT_SECRET}`).toString('base64')
-      },
-      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: ticktickTokens.refresh_token })
-    });
-    const data = await res.json();
-    if (data.access_token) ticktickTokens.access_token = data.access_token;
-  } catch(e) { console.log('TickTick refresh error:', e.message); }
-}
-
 // ── TICKTICK TASKS ────────────────────────────────────────────────────────────
 app.get('/tasks', async (req, res) => {
-  if (!ticktickTokens && process.env.TICKTICK_ACCESS_TOKEN) {
-    ticktickTokens = { access_token: process.env.TICKTICK_ACCESS_TOKEN, refresh_token: process.env.TICKTICK_REFRESH_TOKEN };
-  }
-if (!ticktickTokens) return res.json({ tasks: [], projects: [], status: 'not_connected' });
+  const token = ticktickAccessToken || process.env.TICKTICK_ACCESS_TOKEN;
+  console.log('Using TickTick token:', token?.slice(0, 8));
+  if (!token) return res.json({ tasks: [], projects: [], status: 'not_connected' });
   try {
-    console.log('TickTick token:', ticktickTokens.access_token?.slice(0, 10));
     const projectsRes = await fetch('https://api.ticktick.com/open/v1/project', {
-      headers: { 'Authorization': `Bearer ${ticktickTokens.access_token}` }
+      headers: { 'Authorization': `Bearer ${token}` }
     });
     const projects = await projectsRes.json();
-    console.log('Projects response:', JSON.stringify(projects).slice(0, 200));
+    console.log('Projects:', JSON.stringify(projects).slice(0, 100));
     if (!Array.isArray(projects)) return res.status(500).json({ error: 'projects not array', raw: projects });
     const taskPromises = projects.map(p =>
       fetch(`https://api.ticktick.com/open/v1/project/${p.id}/data`, {
-        headers: { 'Authorization': `Bearer ${ticktickTokens.access_token}` }
+        headers: { 'Authorization': `Bearer ${token}` }
       }).then(r => r.json()).then(d => (d.tasks || []).map(t => ({ ...t, projectName: p.name }))).catch(() => [])
     );
     const taskArrays = await Promise.all(taskPromises);
     const tasks = taskArrays.flat();
-    console.log('TickTick tasks found:', tasks.length);
+    console.log('Tasks found:', tasks.length);
     res.json({ tasks, projects, status: 'ok' });
-  } catch (err) { 
+  } catch (err) {
     console.log('Tasks error:', err.message);
-    res.status(500).json({ error: err.message }); 
+    res.status(500).json({ error: err.message });
   }
+});
+
+app.post('/tasks/:id/close', async (req, res) => {
+  const token = ticktickAccessToken || process.env.TICKTICK_ACCESS_TOKEN;
+  if (!token) return res.status(401).json({ error: 'not_connected' });
+  try {
+    const { projectId } = req.body;
+    await fetch(`https://api.ticktick.com/open/v1/project/${projectId}/task/${req.params.id}/complete`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── GMAIL AUTH ────────────────────────────────────────────────────────────────
