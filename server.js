@@ -182,29 +182,28 @@ async function refreshTickTickToken() {
 
 // ── TICKTICK TASKS ────────────────────────────────────────────────────────────
 app.get('/tasks', async (req, res) => {
-  const token = process.env.TICKTICK_ACCESS_TOKEN || ticktickTokens?.access_token;
-  if (!token) return res.json({ tasks: [], projects: [], status: 'not_connected' });
+  if (!ticktickTokens && process.env.TICKTICK_ACCESS_TOKEN) {
+    ticktickTokens = { access_token: process.env.TICKTICK_ACCESS_TOKEN, refresh_token: process.env.TICKTICK_REFRESH_TOKEN };
+  }
+  if (!ticktickTokens) return res.json({ tasks: [], projects: [], status: 'not_connected' });
   try {
-    const [tasksRes, projectsRes] = await Promise.all([
-      fetch('https://api.ticktick.com/open/v1/task', { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch('https://api.ticktick.com/open/v1/project', { headers: { 'Authorization': `Bearer ${token}` } })
-    ]);
-    const tasks = await tasksRes.json();
-    const projects = await projectsRes.json();
-    res.json({ tasks: Array.isArray(tasks) ? tasks : [], projects: Array.isArray(projects) ? projects : [] });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post('/tasks/:id/close', async (req, res) => {
-  const token = process.env.TICKTICK_ACCESS_TOKEN || ticktickTokens?.access_token;
-  const { projectId } = req.body;
-  try {
-    await fetch(`https://api.ticktick.com/open/v1/project/${projectId}/task/${req.params.id}/complete`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}` }
+    const projectsRes = await fetch('https://api.ticktick.com/open/v1/project', {
+      headers: { 'Authorization': `Bearer ${ticktickTokens.access_token}` }
     });
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const projects = await projectsRes.json();
+    const taskPromises = projects.map(p =>
+      fetch(`https://api.ticktick.com/open/v1/project/${p.id}/data`, {
+        headers: { 'Authorization': `Bearer ${ticktickTokens.access_token}` }
+      }).then(r => r.json()).then(d => (d.tasks || []).map(t => ({ ...t, projectName: p.name }))).catch(() => [])
+    );
+    const taskArrays = await Promise.all(taskPromises);
+    const tasks = taskArrays.flat();
+    console.log('TickTick tasks found:', tasks.length);
+    res.json({ tasks, projects, status: 'ok' });
+  } catch (err) { 
+    console.log('Tasks error:', err.message);
+    res.status(500).json({ error: err.message }); 
+  }
 });
 
 // ── GMAIL AUTH ────────────────────────────────────────────────────────────────
